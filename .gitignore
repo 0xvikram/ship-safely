@@ -1,3 +1,4 @@
 node_modules/
 .ship-safely/
 .env
+flagsmith.json
