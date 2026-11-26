@@ -5,7 +5,7 @@ Evaluate the flag for the user (identity), so a 25% rollout means a stable 25% o
 ## Node.js (server, `flagsmith-nodejs`)
 
 ```js
-import Flagsmith from 'flagsmith-nodejs'
+import { Flagsmith } from 'flagsmith-nodejs'
 const flagsmith = new Flagsmith({ environmentKey: process.env.FLAGSMITH_SERVER_KEY })
 
 const flags = await flagsmith.getIdentityFlags(user.id)

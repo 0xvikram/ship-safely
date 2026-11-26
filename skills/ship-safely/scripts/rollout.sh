@@ -12,11 +12,15 @@
 #   rollout.sh archive   <feature> --approved
 #   rollout.sh status    <feature>
 set -euo pipefail
+exec 3>&1 # errors go to the real stdout even from inside $(...)
 
 STATE_DIR="${SHIP_SAFELY_STATE:-.ship-safely}"
 FS=(flagsmith --no-input)
+# fs: a read; fsm: a change (only reached after --approved). Both return the CLI's stdout, or fail with its first error line as JSON.
+fs() { local out; if ! out="$("${FS[@]}" "$@" 2>&1)"; then die "flagsmith $(printf '%s ' "$@" | sed 's/--yes //' | cut -c1-40)failed: $(printf '%s' "$out" | grep -m1 -i 'error' | cut -c1-200)"; fi; printf '%s' "$out"; }
+fsm() { fs --yes "$@"; }
 
-die() { jq -cn --arg e "$1" --arg hint "${2:-}" '{ok:false,error:$e} + (if $hint=="" then {} else {hint:$hint} end)'; exit 1; }
+die() { jq -cn --arg e "$1" --arg hint "${2:-}" '{ok:false,error:$e} + (if $hint=="" then {} else {hint:$hint} end)' >&3; exit 1; }
 need() { command -v "$1" >/dev/null || die "missing dependency: $1" "${2:-}"; }
 need flagsmith "install: brew install Flagsmith/tap/flagsmith"
 need jq
@@ -50,7 +54,20 @@ record() { # record <event> <json-object>
   local tmp; tmp="$(mktemp)"
   jq -c --arg ev "$1" --arg at "$(now)" --argjson d "$2" '.history += [{at:$at, event:$ev} + $d] | . + $d' "$state_file" > "$tmp" && mv "$tmp" "$state_file"
 }
-rules() { jq -cn --arg p "$1" '{type:"ALL",rules:[{type:"ANY",conditions:[{operator:"PERCENTAGE_SPLIT",property:"",value:$p}]}]}'; }
+rules() { jq -cn --arg p "$1" '{type:"ALL",rules:[{type:"ANY",conditions:[{operator:"PERCENTAGE_SPLIT",property:null,value:$p}]}]}'; }
+# `flagsmith segment create/update --rules` drops an empty "property", and the API answers a percentage split
+# without that key with a 500. So the rollout segment goes through `flagsmith api` with "property": null.
+project_id() { fs config --json | jq -r '.project.value'; }
+seg_create() { # seg_create <pct> -> segment id
+  local fid body; fid="$(fs feature get "$feature" --jq .id)"
+  body="$(jq -cn --arg n "$seg_name" --argjson pr "$(project_id)" --argjson f "$fid" --argjson r "$(rules "$1")" --arg d "ship-safely staged rollout of $feature" \
+    '{name:$n, project:$pr, feature:$f, description:$d, rules:[$r]}')"
+  printf '%s' "$body" | fs api "api/v1/projects/$(project_id)/segments/" -X POST --input - | jq -r .id
+}
+seg_set_pct() { # seg_set_pct <segment id> <pct>
+  local body; body="$(jq -cn --arg n "$seg_name" --argjson r "$(rules "$2")" '{name:$n, rules:[$r]}')"
+  printf '%s' "$body" | fs api "api/v1/projects/$(project_id)/segments/$1/" -X PATCH --input - >/dev/null
+}
 valid_pct() { [[ "$pct" =~ ^[0-9]+$ ]] && [ "$pct" -ge 1 ] && [ "$pct" -le 100 ] || die "percentage must be 1-100"; }
 seg_id() { "${FS[@]}" segment list --include-feature-specific --jq "[.[] | select(.name==\"$seg_name\") | .id][0] // empty" 2>/dev/null || true; }
 env_name() { "${FS[@]}" config --json 2>/dev/null | jq -r '.environment.value // .environment // empty' 2>/dev/null || true; }
@@ -63,23 +80,23 @@ preflight)
   sid="$(seg_id)"
   jq -cn --argjson cfg "$cfg" --arg f "$feature" --argjson exists "$exists" --argjson def "$default" --arg sid "$sid" --slurpfile st "$state_file" \
     '{ok:true, feature:$f, exists:($exists>0), default_enabled:$def, rollout_segment:(if $sid=="" then null else ($sid|tonumber) end), stage:$st[0].stage,
-      context:($cfg | with_entries(select(.key|test("project|environment|organisation"))) | map_values(.value? // .))}'
+      context:{project:($cfg.project.name // $cfg.project.value), environment:($cfg.environment.name // $cfg.environment.value)}}'
   ;;
 
 start)
   mutating; valid_pct
-  exists="$("${FS[@]}" feature list --jq "[.[] | select(.name==\"$feature\")] | length")"
+  exists="$(fs feature list --jq "[.[] | select(.name==\"$feature\")] | length")"
   if [ "$exists" = 0 ]; then
-    "${FS[@]}" feature create "$feature" --description "${description:-Rolled out by ship-safely}" --json >/dev/null
+    fsm feature create "$feature" --description "${description:-Rolled out by ship-safely}" --json >/dev/null
   fi
-  "${FS[@]}" flag update "$feature" --disable --json >/dev/null              # everyone else stays on the old path
+  fsm flag update "$feature" --disable --json >/dev/null              # everyone else stays on the old path
   sid="$(seg_id)"
   if [ -z "$sid" ]; then
-    sid="$("${FS[@]}" segment create "$seg_name" --feature "$feature" --rules "$(rules "$pct")" --description "ship-safely staged rollout of $feature" --jq .id)"
+    sid="$(seg_create "$pct")"
   else
-    "${FS[@]}" segment update "$sid" --rules "$(rules "$pct")" --json >/dev/null
+    seg_set_pct "$sid" "$pct"
   fi
-  "${FS[@]}" flag update "$feature" --enable --segment "$sid" --json >/dev/null
+  fsm flag update "$feature" --enable --segment "$sid" --json >/dev/null
   record start "$(jq -cn --argjson s "$sid" --argjson p "$pct" '{segment:$s, stage:$p, killed:false}')"
   jq -cn --arg f "$feature" --argjson s "$sid" --argjson p "$pct" '{ok:true, feature:$f, segment:$s, rollout_pct:$p, next:"gate"}'
   ;;
@@ -90,7 +107,7 @@ widen)
   cur="$(jq '.stage' "$state_file")"
   [ "$(jq -r '.killed // false' "$state_file")" = "true" ] && die "rollout was killed; fix the cause, then start again" "rollout.sh start $feature <pct> --approved"
   [ "$pct" -gt "$cur" ] || die "new percentage ($pct) must be above the current stage ($cur)"
-  "${FS[@]}" segment update "$sid" --rules "$(rules "$pct")" --json >/dev/null
+  seg_set_pct "$sid" "$pct"
   record widen "$(jq -cn --argjson p "$pct" '{stage:$p}')"
   jq -cn --arg f "$feature" --argjson from "$cur" --argjson to "$pct" '{ok:true, feature:$f, from_pct:$from, rollout_pct:$to, next:"gate"}'
   ;;
@@ -98,20 +115,35 @@ widen)
 gate)
   [ "${#health[@]}" -gt 0 ] || die "gate needs a health command after --" "e.g. rollout.sh gate $feature -- npm test"
   stage="$(jq '.stage' "$state_file")"
-  # 1. does Flagsmith serve the flag to roughly the intended share of identities?
-  on=0
-  for i in $(seq 1 "$samples"); do
-    v="$("${FS[@]}" evaluate "$feature" --identity "ship-safely-probe-$i" --jq '.enabled' 2>/dev/null || echo false)"
-    [ "$v" = "true" ] && on=$((on+1))
+  # 1. wait until Flagsmith actually serves the new share (edge servers take a few seconds after a change);
+  #    a health check that runs before the change is live would pass for the wrong reason.
+  #    "plausible" = within 2.5 standard deviations of the stage for this sample size.
+  low="$(awk -v p="$stage" -v n="$samples" 'BEGIN{sd=sqrt(p*(100-p)/n); l=p-2.5*sd; print (l<0?0:l)}')"
+  high="$(awk -v p="$stage" -v n="$samples" 'BEGIN{sd=sqrt(p*(100-p)/n); h=p+2.5*sd; print (h>100?100:h)}')"
+  served=0; tries=0; live=false
+  while [ "$tries" -lt "${SHIP_SAFELY_PROBE_TRIES:-6}" ]; do
+    tries=$((tries+1)); on=0
+    for i in $(seq 1 "$samples"); do
+      v="$("${FS[@]}" evaluate "$feature" --identity "ship-safely-probe-$i" --jq '.enabled' 2>/dev/null || echo false)"
+      [ "$v" = "true" ] && on=$((on+1))
+    done
+    served=$(( on * 100 / samples ))
+    if awk -v s="$served" -v l="$low" -v h="$high" 'BEGIN{exit !(s>=l && s<=h)}'; then live=true; break; fi
+    sleep "${SHIP_SAFELY_PROBE_WAIT:-5}"
   done
-  served=$(( on * 100 / samples ))
+  if [ "$live" != true ]; then
+    jq -cn --arg f "$feature" --argjson p "$stage" --argjson served "$served" --argjson t "$tries" \
+      '{ok:false, feature:$f, rollout_pct:$p, served_pct_sample:$served, probe_tries:$t, live:false,
+        next:"not live yet: Flagsmith is not serving \($p)% after \($t) probes; wait and re-run gate (do not kill, do not widen)"}'
+    exit 3
+  fi
   # 2. the human-chosen health check, run while the flag is live; only its exit code and last line are kept
   set +e; out="$("${health[@]}" 2>&1)"; code=$?; set -e
   last="$(printf '%s' "$out" | tail -n 1 | cut -c1-200)"
   pass=$([ "$code" = 0 ] && echo true || echo false)
   record gate "$(jq -cn --argjson p "$stage" --argjson served "$served" --argjson pass "$pass" --arg last "$last" '{gate:{stage:$p, served_pct:$served, health_ok:$pass, health_tail:$last}}')"
-  jq -cn --arg f "$feature" --argjson p "$stage" --argjson served "$served" --argjson n "$samples" --argjson pass "$pass" --argjson code "$code" --arg last "$last" \
-    '{ok:$pass, feature:$f, rollout_pct:$p, served_pct_sample:$served, samples:$n, health_exit:$code, health_tail:$last,
+  jq -cn --arg f "$feature" --argjson p "$stage" --argjson served "$served" --argjson n "$samples" --argjson t "$tries" --argjson pass "$pass" --argjson code "$code" --arg last "$last" \
+    '{ok:$pass, feature:$f, rollout_pct:$p, live:true, served_pct_sample:$served, samples:$n, probe_tries:$t, health_exit:$code, health_tail:$last,
       next:(if $pass then (if $p>=100 then "finish" else "ask human: widen?" end) else "KILL NOW: rollout.sh kill \($f) --reason ... --approved" end)}'
   [ "$pass" = true ] || exit 2
   ;;
@@ -119,8 +151,8 @@ gate)
 kill)
   mutating; [ -n "$reason" ] || die "kill needs --reason (it becomes the trail for the follow-up)"
   sid="$(seg_id)"
-  [ -n "$sid" ] && "${FS[@]}" flag update "$feature" --disable --segment "$sid" --json >/dev/null
-  "${FS[@]}" flag update "$feature" --disable --json >/dev/null
+  [ -n "$sid" ] && fsm flag update "$feature" --disable --segment "$sid" --json >/dev/null
+  fsm flag update "$feature" --disable --json >/dev/null
   stage="$(jq '.stage' "$state_file")"
   record kill "$(jq -cn --arg r "$reason" --argjson p "$stage" '{killed:true, kill:{reason:$r, at_pct:$p}}')"
   trail="$STATE_DIR/$feature-incident.md"
@@ -138,11 +170,11 @@ finish)
   [ "$(jq '.stage' "$state_file")" -ge 100 ] || die "finish only after a passing gate at 100%" "rollout.sh widen $feature 100 --approved, then gate"
   last_ok="$(jq -r '.history | map(select(.event=="gate")) | last | .gate.health_ok // false' "$state_file")"
   [ "$last_ok" = "true" ] || die "the last gate did not pass"
-  "${FS[@]}" flag update "$feature" --enable --json >/dev/null              # on for everyone without the segment
+  fsm flag update "$feature" --enable --json >/dev/null              # on for everyone without the segment
   sid="$(seg_id)"
   if [ -n "$sid" ]; then
-    "${FS[@]}" flag delete "$feature" --segment "$sid" --yes --json >/dev/null 2>&1 || true
-    "${FS[@]}" segment delete "$sid" --yes --json >/dev/null
+    fsm flag delete "$feature" --segment "$sid" --json >/dev/null 2>&1 || true
+    fsm segment delete "$sid" --json >/dev/null
   fi
   record finish '{"finished":true}'
   jq -cn --arg f "$feature" '{ok:true, feature:$f, flag:"on for everyone", next:"remove the flag checks from code, merge, then rollout.sh archive"}'
@@ -155,7 +187,7 @@ archive)
     left="$(git grep -n -I -- "$feature" -- ':!.ship-safely' 2>/dev/null | head -5 || true)"
     [ -z "$left" ] || die "the flag is still referenced in code" "$(printf '%s' "$left" | tr '\n' ';' | cut -c1-300)"
   fi
-  "${FS[@]}" feature update "$feature" --archive --json >/dev/null
+  fsm feature update "$feature" --archive --json >/dev/null
   record archive '{"archived":true}'
   jq -cn --arg f "$feature" '{ok:true, feature:$f, archived:true}'
   ;;

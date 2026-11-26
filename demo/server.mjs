@@ -2,7 +2,7 @@
 // GET /checkout?user=<id>&cart=<cents> → { total, path }. The "new-checkout" flag picks the pricing path per user.
 // BUG=1 plants a real defect in the new path (it throws for carts over $50), so a health gate can catch it.
 import http from 'node:http'
-import Flagsmith from 'flagsmith-nodejs'
+import { Flagsmith } from 'flagsmith-nodejs'
 
 const key = process.env.FLAGSMITH_SERVER_KEY
 if (!key) { console.error('Set FLAGSMITH_SERVER_KEY (a server-side key: flagsmith environment key create <env>)'); process.exit(1) }
