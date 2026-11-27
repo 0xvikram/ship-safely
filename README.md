@@ -18,7 +18,7 @@
 
 <p align="center">
   <a href="https://youtu.be/yktG5Ck0wxo">
-    <img src="https://img.youtube.com/vi/yktG5Ck0wxo/maxresdefault.jpg" width="720" alt="ship-safely demo video thumbnail. Opens the 2 minute 36 second walkthrough on YouTube.">
+    <img src="https://img.youtube.com/vi/yktG5Ck0wxo/hqdefault.jpg" width="720" alt="ship-safely demo video thumbnail. Opens the 2 minute 36 second walkthrough on YouTube.">
   </a>
 </p>
 
