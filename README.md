@@ -18,7 +18,7 @@
 
 <p align="center">
   <a href="https://youtu.be/yktG5Ck0wxo">
-    <img src="https://img.youtube.com/vi/yktG5Ck0wxo/hqdefault.jpg" width="720" alt="ship-safely demo video thumbnail. Opens the 2 minute 36 second walkthrough on YouTube.">
+    <img src="docs/demo-thumbnail.jpg" width="720" alt="Frame from the demo video: at 50% rollout the health gate reports 15 of 60 checkout errors and tells the agent to kill the rollout. Click to watch the 2 minute 36 second demo on YouTube.">
   </a>
 </p>
 
