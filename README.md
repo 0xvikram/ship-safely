@@ -4,6 +4,8 @@
 
 Built on the [Flagsmith CLI](https://github.com/Flagsmith/flagsmith-cli) for Toggle Wars (WeMakeDevs × Flagsmith), Track 04: Flagsmith Agent Skills.
 
+**Demo video (2:36):** https://youtu.be/yktG5Ck0wxo
+
 ```
 preflight → start 5% → gate → widen 25% → gate → 50% → gate → 100% → gate → finish → remove flag → archive
                          │                 │              │               │
