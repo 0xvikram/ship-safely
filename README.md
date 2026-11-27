@@ -154,7 +154,7 @@ All commands live in `skills/ship-safely/scripts/rollout.sh` and print one line 
 > [!NOTE]
 > `flagsmith segment create --rules` can't create a **percentage-split** segment, the standard building block of a gradual rollout. The CLI omits an empty `property`, and the API answers a `PERCENTAGE_SPLIT` condition without that key with a 500. (`"property": null` works; `""` is a 400.)
 
-The skill creates and widens the rollout segment through `flagsmith api` with `"property": null` until this is fixed in the CLI.
+The skill creates and widens the rollout segment through `flagsmith api` with `"property": null`. The fix for the CLI is up as [Flagsmith/flagsmith-cli#122](https://github.com/Flagsmith/flagsmith-cli/pull/122), with a test that fails without it.
 
 ## Repository layout
 
