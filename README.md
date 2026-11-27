@@ -1,74 +1,121 @@
-# ship-safely
+<h1 align="center">ship-safely</h1>
 
-**An Agent Skill that takes a code change from "merged behind a Flagsmith flag" to "on for everyone, flag removed", or to "off for everyone, with a written trail". Never somewhere in between.**
+<p align="center">
+  <strong>An Agent Skill that ships a code change behind a Flagsmith flag, rolls it out in stages with a health gate at every step, and kills it the moment a gate fails.</strong>
+</p>
 
-Built on the [Flagsmith CLI](https://github.com/Flagsmith/flagsmith-cli) for Toggle Wars (WeMakeDevs × Flagsmith), Track 04: Flagsmith Agent Skills.
+<p align="center">
+  A rollout ends in one of two places: <em>on for everyone, flag removed</em>, or <em>off for everyone, with a written trail</em>. Never somewhere in between.
+</p>
 
-**Demo video (2:36):** https://youtu.be/yktG5Ck0wxo
+<p align="center">
+  <a href="https://youtu.be/yktG5Ck0wxo"><img alt="Demo video, 2 minutes 36 seconds" src="https://img.shields.io/badge/demo_video-2:36-7b51fb"></a>
+  <img alt="Agent Skill" src="https://img.shields.io/badge/Agent_Skill-agentskills.io-2f2f2f">
+  <img alt="Built on Flagsmith CLI v2" src="https://img.shields.io/badge/Flagsmith_CLI-v2-2f2f2f">
+  <img alt="Toggle Wars, Track 04" src="https://img.shields.io/badge/Toggle_Wars-Track_04-2f2f2f">
+  <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2f2f2f">
+</p>
 
+<p align="center">
+  <a href="https://youtu.be/yktG5Ck0wxo">
+    <img src="https://img.youtube.com/vi/yktG5Ck0wxo/maxresdefault.jpg" width="720" alt="ship-safely demo video thumbnail. Opens the 2 minute 36 second walkthrough on YouTube.">
+  </a>
+</p>
+
+---
+
+## Contents
+
+- [Why](#why)
+- [How it works](#how-it-works)
+- [Safety by construction](#safety-by-construction)
+- [Measured: token efficiency](#measured-token-efficiency)
+- [Quick start](#quick-start)
+- [Try the demo](#try-the-demo)
+- [Command reference](#command-reference)
+- [Found while building](#found-while-building)
+- [Repository layout](#repository-layout)
+- [License](#license)
+
+## Why
+
+Risky changes still go to 100% of users at once. Feature flags fix that, but when a coding agent drives the rollout it tends to stop halfway, skip the checks, or leave the flag and its segment behind as debt.
+
+**ship-safely gives the agent one job with a clear end.** You say *"Ship the new checkout safely. Health command: `npm run smoke`."*, and the agent runs the whole release, stopping to ask you before every change to production.
+
+## How it works
+
+```text
+preflight → start 5% → gate → 25% → gate → 50% → gate → 100% → gate → finish → remove flag → archive
+                         │           │            │             │
+                         └───────────┴────────────┴─────────────┴──► gate fails → kill (flag off for everyone)
+                                                                                + incident note
 ```
-preflight → start 5% → gate → widen 25% → gate → 50% → gate → 100% → gate → finish → remove flag → archive
-                         │                 │              │               │
-                         └── a failed gate at any stage → kill: flag off for everyone + incident note
-```
 
-## What it does
-
-You tell your coding agent "ship this safely". The skill makes it:
-
-1. **Preflight** – confirm the project and environment by name before touching anything.
-2. **Put the change behind a flag**, evaluated per user, with the old path as the default.
-3. **Start at 5%** – creates the feature (off for everyone), a feature-specific percentage-split segment, and turns the flag on for that segment only.
-4. **Gate every stage** – first waits until Flagsmith is *actually serving* the new share (edge servers lag a few seconds; a health check that runs before the change is live passes for the wrong reason), then runs your health command and keeps only its exit code and last line.
-5. **Widen** 25% → 50% → 100%, asking a human before each step.
-6. **Kill** on any failed gate: flag off for the segment and the environment default, plus `.ship-safely/<feature>-incident.md` with the reason, stage, last gate and the command to resume.
-7. **Finish** at 100%: on for everyone via the environment default, rollout segment deleted (no leftover segment holding the feature up).
-8. **Archive** after the flag checks are removed from the code – it refuses while `git grep` still finds the flag.
+| Step | What happens |
+|---|---|
+| **1. Preflight** | Confirms the project and environment **by name** before anything changes. |
+| **2. Flag the change** | The new code path goes behind a per-user flag, with the old path as the default. |
+| **3. Start at 5%** | Creates the feature (off for everyone), a feature-specific percentage-split segment, and turns the flag on for that segment only. |
+| **4. Gate** | Waits until Flagsmith is *actually serving* the new share (edge servers lag a few seconds), then runs your health command and keeps only its exit code and last line. |
+| **5. Widen** | 25% → 50% → 100%, with a human yes and a gate at every stage. |
+| **6. Kill** | On any failed gate: flag off for the segment and the environment default, plus `.ship-safely/<feature>-incident.md` with the cause, stage, last gate and the command to resume. |
+| **7. Finish** | After a passing gate at 100%: on for everyone, rollout segment deleted, so nothing is left holding the feature up. |
+| **8. Archive** | Once the flag checks are out of the code. Refuses while `git grep` still finds the flag. |
 
 ## Safety by construction
 
-- Every command that changes Flagsmith **refuses without `--approved`**. The skill tells the agent to pass it only after a human says yes for that exact step (kill after a failed gate is pre-approved at start).
-- **One stage at a time**: widening below the current stage, or after a kill, is refused.
-- `finish` only runs after a **passing gate at 100%**; `archive` only after `finish` and only when the code is clean.
-- State and history live in `.ship-safely/<feature>.json`, so any agent (or person) can see exactly where a rollout stands.
+> [!IMPORTANT]
+> Every command that changes Flagsmith **refuses to run without `--approved`**. The skill tells the agent to pass it only after a human says yes to that exact step. The one pre-approved action is a kill after a failed gate.
 
-## Token efficiency (measured)
+- **One stage at a time.** Going backwards, or widening after a kill, is refused.
+- **Finish needs proof.** `finish` runs only after a passing gate at 100%.
+- **Archive needs clean code.** `archive` runs only after `finish`, and only when no code still references the flag.
+- **Nothing is hidden.** State and history live in `.ship-safely/<feature>.json`, so any agent or person can see exactly where a rollout stands.
+
+## Measured: token efficiency
 
 Every command prints **one line of JSON**, and CLI errors come back as one line instead of a help page.
 
-Same job, same model (Claude Code, headless): roll `new-checkout` out 5% → 25% → 50% → 100% with a health gate after each stage, then finish. Run on Flagsmith Cloud, 26 Nov 2026.
+Same job, same model (Claude Code with Claude Opus 5.5, headless): roll `new-checkout` from 5% to 100% with a health gate after each stage, then finish. Run on Flagsmith Cloud, 26 Nov 2026.
 
-|  | **with ship-safely** | raw Flagsmith CLI, no skill |
+| | With ship-safely | Raw Flagsmith CLI, no skill |
 |---|---|---|
 | Agent turns | **9** | 19 |
 | Output tokens | **1,638** | 5,127 (3.1×) |
-| Input tokens (incl. cache reads) | **379k** | 1.03M (2.7×) |
+| Input tokens, incl. cache reads | **379k** | 1.03M (2.7×) |
 | Cost | **$0.41** | $0.68 |
 | Time | **82 s** | 125 s |
-| Ended | flag on for everyone, segment removed | flag default still **off**, rollout segment left at 100% |
+| How it ended | Flag on for everyone, segment removed | Flag default still **off**, rollout segment left at 100% |
 
-The skill's own footprint for the whole job: **SKILL.md ≈ 1,285 tokens + all 8 script outputs ≈ 630 tokens**.
+The skill's own footprint for the whole job is about **1.9k tokens**: `SKILL.md` ≈ 1,285 plus all eight script outputs ≈ 630.
 
-## Install
+## Quick start
+
+**Requirements:** the Flagsmith CLI v2+, `bash` and `jq`. Changing flags needs Flagsmith 2.263.0 or newer (Flagsmith Cloud works).
 
 ```sh
-brew install Flagsmith/tap/flagsmith      # Flagsmith CLI v2+
-flagsmith login && flagsmith init          # in your repo
+# 1. Install the Flagsmith CLI and bind your repo to a project
+brew install Flagsmith/tap/flagsmith
+flagsmith login && flagsmith init
+
+# 2. Give your agent the skill (Claude Code shown; any Agent Skills-compatible agent works)
+mkdir -p .claude/skills && cp -R path/to/ship-safely/skills/ship-safely .claude/skills/
 ```
 
-Copy `skills/ship-safely/` into your agent's skills folder, for Claude Code `.claude/skills/ship-safely/` (or symlink it, as `demo/` does). Needs `bash` and `jq`. Changing flags needs Flagsmith 2.263.0+ (Flagsmith Cloud is fine).
+Then ask your agent:
 
-Then ask your agent: *"Ship the new checkout safely. Health command: `npm run smoke`."*
+> Ship the new checkout safely. Health command: `npm run smoke`.
 
-## Run the demo yourself
+## Try the demo
 
-`demo/` is a tiny checkout service whose new pricing path sits behind `new-checkout`. `BUG=1` plants a real defect in that path (carts over $50 throw), so you can watch a gate fail and the kill fire.
+`demo/` is a tiny checkout service whose new pricing path sits behind the `new-checkout` flag. Setting `BUG=1` plants a real defect in that path (carts over $50 throw an error), so you can watch a gate fail and the kill fire.
 
 ```sh
 cd demo && npm install
 flagsmith init --project <your-project> --create-environment Production
 echo "FLAGSMITH_SERVER_KEY=$(flagsmith --yes environment key create Production --json | jq -r .key)" > .env
-set -a && . ./.env && set +a && node server.mjs &        # add BUG=1 to plant the defect
+set -a && . ./.env && set +a && node server.mjs &     # BUG=1 node server.mjs to plant the defect
 
 S=../skills/ship-safely/scripts/rollout.sh
 $S preflight new-checkout
@@ -77,25 +124,52 @@ $S gate  new-checkout -- node health.mjs
 $S widen new-checkout 25 --approved && $S gate new-checkout -- node health.mjs
 ```
 
-What we saw on Flagsmith Cloud: at 5% 3/60 users got the new path, at 25% 12/60, at 50% 29/60, at 100% 58–60/60, all with 0 errors. With `BUG=1` at 50%, the gate saw 15/60 errors; `kill` turned the flag off and the next health check showed 0/60 errors.
+**What we saw on Flagsmith Cloud:**
 
-## Commands
-
-| Command | Changes Flagsmith | What it prints |
+| Stage | Users on the new path | Errors |
 |---|---|---|
-| `preflight <feature>` | no | project, environment, whether the feature exists, current stage |
-| `start <feature> <pct> --approved` | yes | segment id, stage |
-| `gate <feature> [--samples N] -- <health cmd>` | no | live?, served share, health exit code and last line, next step (exit 2 = failed → kill, 3 = not live yet) |
-| `widen <feature> <pct> --approved` | yes | from → to |
-| `kill <feature> --reason TEXT --approved` | yes | stage killed at, path to the incident note |
-| `finish <feature> --approved` | yes | flag on for everyone |
-| `archive <feature> --approved` | yes | archived |
-| `status <feature>` | no | stage, flags, last event |
+| 5% | 3 of 60 | 0 |
+| 25% | 12 of 60 | 0 |
+| 50% | 29 of 60 | 0 |
+| 100% | 58–60 of 60 | 0 |
+| 50% with `BUG=1` | 14 of 60 | **15 of 60** → gate failed → `kill` → next check: 0 of 60 |
+
+## Command reference
+
+All commands live in `skills/ship-safely/scripts/rollout.sh` and print one line of JSON.
+
+| Command | Changes Flagsmith? | Prints |
+|---|---|---|
+| `preflight <feature>` | No | Project, environment, whether the feature exists, current stage |
+| `start <feature> <pct> --approved` | Yes | Segment id, stage |
+| `gate <feature> [--samples N] -- <health cmd>` | No | Live?, served share, health exit code and last line, next step. Exit 2 = failed (kill), 3 = not live yet |
+| `widen <feature> <pct> --approved` | Yes | From → to |
+| `kill <feature> --reason TEXT --approved` | Yes | Stage killed at, path to the incident note |
+| `finish <feature> --approved` | Yes | Flag on for everyone |
+| `archive <feature> --approved` | Yes | Archived |
+| `status <feature>` | No | Stage, state flags, last event |
 
 ## Found while building
 
-`flagsmith segment create --rules` can't create a **percentage-split** segment, the standard building block of a gradual rollout: the CLI omits an empty `property`, and the API answers a `PERCENTAGE_SPLIT` condition without that key with a 500 (`"property": null` works, `""` is a 400). The skill creates and widens the rollout segment through `flagsmith api` with `"property": null` until that is fixed upstream.
+> [!NOTE]
+> `flagsmith segment create --rules` can't create a **percentage-split** segment, the standard building block of a gradual rollout. The CLI omits an empty `property`, and the API answers a `PERCENTAGE_SPLIT` condition without that key with a 500. (`"property": null` works; `""` is a 400.)
+
+The skill creates and widens the rollout segment through `flagsmith api` with `"property": null` until this is fixed in the CLI.
+
+## Repository layout
+
+```text
+skills/ship-safely/
+├── SKILL.md                    the job, step by step, with stop-and-ask points
+├── scripts/rollout.sh          preflight · start · gate · widen · kill · finish · archive · status
+└── references/
+    ├── sdk-snippets.md         per-user flag checks for Node, Python and React
+    └── troubleshooting.md      common CLI errors and what to do
+demo/
+├── server.mjs                  checkout service with a flagged pricing path (BUG=1 plants a defect)
+└── health.mjs                  60 checkouts, fails above 1% errors
+```
 
 ## License
 
-MIT
+[MIT](LICENSE)
